@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>全屏多彩烟花秀</title>
+    <style>
+        body { margin: 0; padding: 0; background: #000; overflow: hidden; touch-action: none; }
+        canvas { display: block; }
+        #guide { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.7); font-size: 14px; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="guide">点击屏幕触发更多烟花</div>
+    <canvas id="fireworks"></canvas>
+
+    <script>
+        const canvas = document.getElementById('fireworks');
+        const ctx = canvas.getContext('2d');
+        const guide = document.getElementById('guide');
+        let width, height;
+        let fireworks = []; // 存储所有烟花（上升+下降）
+        let particles = []; // 爆炸粒子
+        let lastTime = 0;
+        let isActive = false;
+
+        // 屏幕适配（高清屏处理）
+        function resize() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            ctx.scale(dpr, dpr);
+            canvas.style.width = `${width}px`;
+            canvas.style.height = `${height}px`;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+
+        // 粒子类（优化颜色通透感）
+        class Particle {
+            constructor(x, y, baseHue, type) {
+                this.x = x;
+                this.y = y;
+                this.baseHue = baseHue; // 基础色调
+                this.type = type; // 0:普通 1:闪光 2:拖尾 3:星芒
+                this.life = 1;
+                this.alpha = 1;
+                this.size = 0.8 + Math.random() * 2.2; // 大小随机
+                this.gravity = 0.03 + Math.random() * 0.05; // 轻微重力差异
+                this.friction = 0.94 + Math.random() * 0.03; // 空气阻力
+                this.wind = (Math.random() - 0.5) * 0.08; // 微风影响
+
+                // 颜色通透化处理：高饱和度+动态透明度
+                this.hue = (baseHue + (Math.random() - 0.5) * 40) % 360; // 色调偏移
+                this.lightness = 60 + Math.random() * 20; // 亮度更高，更通透
+
+                // 速度与方向（根据类型调整）
+                const angle = Math.random() * Math.PI * 2;
+                let speed = 2 + Math.random() * 4;
+                if (type === 1) speed *= 1.5; // 闪光粒子速度更快
+                if (type === 3) speed *= 0.8; // 星芒粒子更慢
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+
+                // 拖尾粒子额外属性
+                if (type === 2) {
+                    this.trail = [];
+                    this.trailLength = 5 + Math.floor(Math.random() * 5);
+                }
+            }
+
+            update(deltaTime) {
+                const factor = deltaTime / 16; // 时间补偿
+
+                // 物理运动
+                this.vx = (this.vx + this.wind) * this.friction;
+                this.vy = (this.vy + this.gravity) * this.friction;
+                this.x += this.vx * factor;
+                this.y += this.vy * factor;
+
+                // 生命周期衰减（通透感随时间淡化）
+                this.life -= 0.012 * factor + (Math.abs(this.vy) * 0.0008);
+                this.alpha = Math.min(this.life * 1.2, 1); // 后期快速淡化
+
+                // 更新拖尾
+                if (this.type === 2) {
+                    this.trail.unshift({x: this.x, y: this.y, alpha: this.alpha * 0.6});
+                    if (this.trail.length > this.trailLength) this.trail.pop();
+                }
+            }
+
+            draw() {
+                if (this.alpha <= 0) return;
+                ctx.globalAlpha = this.alpha;
+
+                // 颜色应用（通透感核心：高亮度+动态alpha）
+                const color = `hsla(${this.hue}, 90%, ${this.lightness}%, ${this.alpha})`;
+
+                // 不同粒子的绘制逻辑
+                switch (this.type) {
+                    case 1: // 闪光粒子（带外发光）
+                        ctx.fillStyle = color;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.size * 1.5, 0, Math.PI * 2);
+                        ctx.fill();
+                        // 核心亮点
+                        ctx.fillStyle = `hsla(${this.hue}, 100%, 90%, ${this.alpha})`;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.size * 0.6, 0, Math.PI * 2);
+                        ctx.fill();
+                        break;
+
+                    case 2: // 拖尾粒子
+                        // 绘制拖尾
+                        this.trail.forEach((p, i) => {
+                            const trailAlpha = p.alpha * (1 - i / this.trailLength);
+                            ctx.fillStyle = `hsla(${this.hue}, 90%, ${this.lightness + 10}%, ${trailAlpha})`;
+                            ctx.beginPath();
+                            ctx.arc(p.x, p.y, this.size * (1 - i / this.trailLength), 0, Math.PI * 2);
+                            ctx.fill();
+                        });
+                        // 绘制粒子本体
+                        ctx.fillStyle = color;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                        ctx.fill();
+                        break;
+
+                    case 3: // 星芒粒子（模拟星光效果）
+                        ctx.fillStyle = color;
+                        this.drawStar(this.x, this.y, 6, this.size, this.size * 0.4);
+                        break;
+
+                    default: // 普通粒子
+                        ctx.fillStyle = color;
+                        ctx.beginPath();
+                        ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                        ctx.fill();
+                }
+
+                ctx.globalAlpha = 1;
+            }
+
+            // 绘制星形
+            drawStar(cx, cy, points, outerR, innerR) {
+                let rot = Math.PI / 2 * 3;
+                let x = cx;
+                let y = cy;
+                const step = Math.PI / points;
+
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - outerR);
+                for (let i = 0; i < points; i++) {
+                    x = cx + Math.cos(rot) * outerR;
+                    y = cy + Math.sin(rot) * outerR;
+                    ctx.lineTo(x, y);
+                    rot += step;
+
+                    x = cx + Math.cos(rot) * innerR;
+                    y = cy + Math.sin(rot) * innerR;
+                    ctx.lineTo(x, y);
+                    rot += step;
+                }
+                ctx.lineTo(cx, cy - outerR);
+                ctx.closePath();
+                ctx.fill();
+            }
+
+            isAlive() {
+                return this.life > 0;
+            }
+        }
+
+        // 烟花弹类（支持上升/下降双向）
+        class Firework {
+            constructor(isUp = true, x = null) {
+                this.isUp = isUp; // true:从底部上升 false:从顶部下降
+                this.x = x || (Math.random() * width * 0.9 + width * 0.05); // 全屏分布
+                this.y = isUp ? height : 0; // 初始位置
+                this.targetY = isUp 
+                    ? (Math.random() * height * 0.4 + height * 0.1) // 上升烟花目标高度
+                    : (Math.random() * height * 0.4 + height * 0.5); // 下降烟花目标高度
+                this.hue = this.getRandomHue(); // 通透多彩色调
+                this.speed = isUp ? (-7 - Math.random() * 3) : (7 + Math.random() * 3); // 上升负速度，下降正速度
+                this.trail = []; // 尾迹
+                this.explodeType = Math.floor(Math.random() * 5); // 爆炸类型
+                this.isManual = !!x; // 是否手动触发
+            }
+
+            // 随机通透色调（避开暗沉色）
+            getRandomHue() {
+                const brightHues = [
+                    0-30, // 红橙
+                    40-60, // 黄
+                    120-150, // 绿
+                    180-220, // 青蓝
+                    240-270, // 蓝紫
+                    300-330 // 粉紫
+                ];
+                const range = brightHues[Math.floor(Math.random() * brightHues.length)];
+                const [min, max] = range.toString().split('-').map(Number);
+                return min + Math.random() * (max - min);
+            }
+
+            update(deltaTime) {
+                const factor = deltaTime / 16;
+                // 运动逻辑（上升减速，下降加速）
+                this.y += this.speed * factor;
+                this.speed += this.isUp ? 0.12 * factor : -0.12 * factor;
+
+                // 绘制尾迹（通透渐变）
+                this.trail.push({
+                    x: this.x, 
+                    y: this.y, 
+                    alpha: 0.6,
+                    size: 2 - this.trail.length * 0.1
+                });
+                if (this.trail.length > 12) this.trail.shift();
+                
+                this.trail.forEach((p, i) => {
+                    p.alpha *= 0.82;
+                    ctx.fillStyle = `hsla(${this.hue}, 90%, 70%, ${p.alpha})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+                // 绘制烟花弹（高亮核心）
+                ctx.fillStyle = `hsl(${this.hue}, 100%, 80%)`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 判断是否到达爆炸点
+                if (this.isUp) {
+                    return this.y <= this.targetY || this.speed >= -1;
+                } else {
+                    return this.y >= this.targetY || this.speed <= 1;
+                }
+            }
+
+            // 爆炸特效（更绚烂的组合）
+            explode() {
+                const particles = [];
+                const baseCount = 100 + Math.random() * 100;
+
+                // 不同爆炸类型（参考真实烟花视频）
+                switch (this.explodeType) {
+                    case 0: // 放射状爆炸（基础款）
+                        for (let i = 0; i < baseCount; i++) {
+                            const type = i % 5 === 0 ? 1 : 0; // 混合闪光粒子
+                            particles.push(new Particle(this.x, this.y, this.hue, type));
+                        }
+                        break;
+
+                    case 1: // 环形爆炸（多层环）
+                        const rings = 3;
+                        for (let r = 0; r < rings; r++) {
+                            const radius = (r + 1) * 0.8;
+                            const count = baseCount / rings;
+                            for (let i = 0; i < count; i++) {
+                                const angle = (i / count) * Math.PI * 2;
+                                const p = new Particle(this.x, this.y, this.hue, 0);
+                                p.vx = Math.cos(angle) * (2 + radius);
+                                p.vy = Math.sin(angle) * (2 + radius);
+                                particles.push(p);
+                            }
+                        }
+                        // 中心添加闪光粒子
+                        for (let i = 0; i < 20; i++) {
+                            particles.push(new Particle(this.x, this.y, this.hue, 1));
+                        }
+                        break;
+
+                    case 2: // 星芒爆炸（多角星）
+                        const points = 8 + Math.floor(Math.random() * 4);
+                        for (let i = 0; i < points; i++) {
+                            const angle = (i / points) * Math.PI * 2;
+                            // 每个角发射粒子流
+                            for (let j = 0; j < 30; j++) {
+                                const p = new Particle(this.x, this.y, this.hue, 3);
+                                const spread = 0.4; // 角度扩散
+                                const realAngle = angle + (Math.random() - 0.5) * spread;
+                                const speed = 2 + Math.random() * 3 - j * 0.08;
+                                p.vx = Math.cos(realAngle) * speed;
+                                p.vy = Math.sin(realAngle) * speed;
+                                particles.push(p);
+                            }
+                        }
+                        break;
+
+                    case 3: // 拖尾爆炸（烟花雨）
+                        for (let i = 0; i < baseCount * 1.2; i++) {
+                            particles.push(new Particle(this.x, this.y, this.hue, 2));
+                        }
+                        break;
+
+                    case 4: // 混合爆炸（终极绚烂）
+                        // 外层环形
+                        for (let i = 0; i < baseCount * 0.3; i++) {
+                            const angle = (i / (baseCount * 0.3)) * Math.PI * 2;
+                            const p = new Particle(this.x, this.y, this.hue, 0);
+                            p.vx = Math.cos(angle) * (3 + Math.random() * 2);
+                            p.vy = Math.sin(angle) * (3 + Math.random() * 2);
+                            particles.push(p);
+                        }
+                        // 中层星芒
+                        for (let i = 0; i < baseCount * 0.4; i++) {
+                            particles.push(new Particle(this.x, this.y, this.hue, 3));
+                        }
+                        // 内层闪光
+                        for (let i = 0; i < 30; i++) {
+                            particles.push(new Particle(this.x, this.y, this.hue, 1));
+                        }
+                        // 拖尾粒子
+                        for (let i = 0; i < baseCount * 0.3; i++) {
+                            particles.push(new Particle(this.x, this.y, this.hue, 2));
+                        }
+                        break;
+                }
+
+                return particles;
+            }
+        }
+
+        // 动画主循环
+        function animate(timestamp) {
+            if (!isActive) return;
+            const deltaTime = timestamp - lastTime || 16;
+            lastTime = timestamp;
+
+            // 半透明背景（保留轨迹，增强层次感）
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+            ctx.fillRect(0, 0, width, height);
+
+            // 更新所有烟花
+            for (let i = fireworks.length - 1; i >= 0; i--) {
+                const firework = fireworks[i];
+                const exploded = firework.update(deltaTime);
+                if (exploded) {
+                    particles = particles.concat(firework.explode());
+                    fireworks.splice(i, 1);
+                }
+            }
+
+            // 更新所有粒子
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const p = particles[i];
+                p.update(deltaTime);
+                p.draw();
+                if (!p.isAlive()) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            // 自动生成烟花（上下同时发射，遍布全屏）
+            if (fireworks.length < 8 && Math.random() < 0.025) {
+                // 50%概率上升/下降
+                const isUp = Math.random() > 0.5;
+                fireworks.push(new Firework(isUp));
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // 启动与交互
+        function triggerFirework(x) {
+            if (!isActive) {
+                isActive = true;
+                guide.style.opacity = 0.3; // 淡化提示
+                lastTime = performance.now();
+                requestAnimationFrame(animate);
+            }
+            // 点击位置同时触发上升和下降烟花
+            fireworks.push(new Firework(true, x));
+            fireworks.push(new Firework(false, x));
+        }
+
+        // 触摸和点击交互
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (e.touches.length) triggerFirework(e.touches[0].clientX);
+        });
+        canvas.addEventListener('click', (e) => triggerFirework(e.clientX));
+    </script>
+</body>
+</html>
